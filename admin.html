@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Admin · Products</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="./styles.css">
+  <!-- Your config + Supabase client -->
+  <script src="./config.js"></script>
+  <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+  <style>
+    :root { color-scheme: dark; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    .wrap { max-width: 960px; margin: 24px auto; padding: 0 16px; }
+    .card { background: var(--card, #0b0d11); border: 1px solid var(--hair, #1f2430); border-radius: 16px; padding: 14px; margin-bottom: 16px; }
+    .row { display: grid; grid-template-columns: 1fr 2fr; gap: 10px; margin: 8px 0; align-items: center; }
+    label { font-weight: 700; }
+    input, textarea, select { width: 100%; padding: 10px; border-radius: 10px; border: 1px solid var(--hair, #2a2f3a); background: #0c0f14; color: #fff; }
+    button { padding: 10px 14px; border-radius: 10px; border: 1px solid var(--hair, #2a2f3a); background: #1a1f29; color: #fff; cursor: pointer; }
+    button:hover { background: #222938; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .muted { color: #9aa3b2; }
+    .hidden { display: none; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+    img.thumb { width: 100%; max-height: 140px; object-fit: cover; border-radius: 10px; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Admin Panel</h1>
+
+    <!-- LOGIN -->
+    <section id="auth" class="card">
+      <h3>Login</h3>
+      <div class="row"><label>Email</label><input id="email" type="email" required></div>
+      <div class="row"><label>Password</label><input id="password" type="password" required></div>
+      <button id="loginBtn">Login</button>
+      <p id="authMsg" class="muted"></p>
+      <p class="muted">Tip: Supabase → Authentication → Users → Add user (your email+password).</p>
+    </section>
+
+    <!-- APP -->
+    <section id="app" class="hidden">
+      <div class="card">
+        <h3>Add / Update Product</h3>
+        <form id="pform">
+          <div class="row"><label>Name</span></label><input id="name" required></div>
+          <div class="row"><label>Slug</label><input id="slug" required placeholder="auto-from-name"></div>
+          <div class="row"><label>Price (INR)</label><input id="price" type="number" min="0" required></div>
+          <div class="row"><label>Short</label><input id="short" placeholder="one line summary"></div>
+          <div class="row"><label>Description</label><textarea id="description" rows="4" placeholder="full description"></textarea></div>
+          <div class="row"><label>Tags</label><input id="tags" placeholder="Kitchen, Storage"></div>
+          <div class="row"><label>In Stock?</label>
+            <select id="in_stock"><option value="true">Yes</option><option value="false">No</option></select>
+          </div>
+          <div class="row"><label>Specs (key:value per line)</label>
+            <textarea id="specs" rows="4" placeholder="Material: Cotton&#10;Size: 30x30cm"></textarea>
+          </div>
+          <div class="row"><label>Images</label><input id="images" type="file" accept="image/*" multiple></div>
+          <div class="actions">
+            <button type="submit">Save Product</button>
+            <span id="saveMsg" class="muted"></span>
+          </div>
+        </form>
+      </div>
+
+      <div class="card">
+        <h3>Existing Products</h3>
+        <div id="list" class="grid"></div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    // --- Setup
+    if (!window.NKCFG || !window.NKCFG.SUPABASE_URL) {
+      alert("config.js missing or not filled. Please add SUPABASE_URL and SUPABASE_ANON_KEY.");
+    }
+    const supabase = window.supabase.createClient(NKCFG.SUPABASE_URL, NKCFG.SUPABASE_ANON_KEY);
+    const authBox = document.getElementById('auth');
+    const appBox = document.getElementById('app');
+
+    // --- Auth
+    document.getElementById('loginBtn').onclick = async () => {
+      const email = document.getElementById('email').value.trim();
+      const password = document.getElementById('password').value;
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      document.getElementById('authMsg').textContent = error ? error.message : 'Logged in!';
+      if (!error) { authBox.classList.add('hidden'); appBox.classList.remove('hidden'); loadList(); }
+    };
+
+    // Persisted session
+    supabase.auth.getSession().then(({ data }) => {
+      if (data.session) { authBox.classList.add('hidden'); appBox.classList.remove('hidden'); loadList(); }
+    });
+
+    // Auto-slug from name
+    document.getElementById('name').addEventListener('input', e => {
+      const s = e.target.value.toLowerCase().trim()
+        .replace(/[^a-z0-9\s-]/g,'')
+        .replace(/\s+/g,'-')
+        .replace(/-+/g,'-');
+      const el = document.getElementById('slug'); if (!el.value) el.value = s;
+    });
+
+    // --- Save (create or update by slug)
+    document.getElementById('pform').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const saveMsg = document.getElementById('saveMsg'); saveMsg.textContent = 'Saving...';
+
+      const name = document.getElementById('name').value.trim();
+      const slug = document.getElementById('slug').value.trim();
+      const price = parseInt(document.getElementById('price').value,10) || 0;
+      const short = document.getElementById('short').value.trim();
+      const description = document.getElementById('description').value.trim();
+      const tags = document.getElementById('tags').value.split(',').map(s => s.trim()).filter(Boolean);
+      const in_stock = document.getElementById('in_stock').value === 'true';
+      const specsStr = document.getElementById('specs').value;
+      const specs = {};
+      (specsStr || '').split('\\n').forEach(line => {
+        const i = line.indexOf(':');
+        if (i>0) specs[line.slice(0,i).trim()] = line.slice(i+1).trim();
+      });
+
+      // Upload images (if added)
+      const files = Array.from(document.getElementById('images').files || []);
+      const imageUrls = [];
+      for (const f of files) {
+        const path = `${slug}/${Date.now()}-${f.name.replace(/\\s+/g,'-')}`;
+        const { error: upErr } = await supabase.storage.from('product-images').upload(path, f, { upsert: true });
+        if (upErr) { saveMsg.textContent = 'Upload failed: ' + upErr.message; return; }
+        const { data } = supabase.storage.from('product-images').getPublicUrl(path);
+        imageUrls.push(data.publicUrl);
+      }
+
+      // Merge with existing
+      const { data: existing } = await supabase.from('products').select('*').eq('slug', slug).limit(1).maybeSingle();
+      const payload = {
+        name, slug, price, short, description, tags, in_stock,
+        specs, images: files.length ? imageUrls : (existing?.images || [])
+      };
+
+      let dbErr;
+      if (existing) {
+        const { error } = await supabase.from('products').update(payload).eq('id', existing.id);
+        dbErr = error;
+      } else {
+        const { error } = await supabase.from('products').insert(payload);
+        dbErr = error;
+      }
+
+      if (dbErr) { saveMsg.textContent = 'DB error: ' + dbErr.message; return; }
+      saveMsg.textContent = 'Saved ✅';
+      (document.getElementById('pform')).reset();
+      loadList();
+    });
+
+    // --- List + Delete + Prefill
+    async function loadList() {
+      const { data, error } = await supabase
+        .from('products')
+        .select('id,slug,name,price,in_stock,images')
+        .order('created_at', { ascending: false });
+      const list = document.getElementById('list');
+      if (error) { list.innerHTML = 'Failed: ' + error.message; return; }
+      list.innerHTML = (data || []).map(p => `
+        <div class="card">
+          <strong>${p.name}</strong><br>
+          ₹${p.price} · ${p.in_stock ? 'In stock' : 'Out of stock'}<br>
+          <small class="muted">${p.slug}</small><br>
+          ${Array.isArray(p.images) && p.images[0] ? `<img class="thumb" src="${p.images[0]}" alt="">` : ''}
+          <div class="actions">
+            <a href="product.html?slug=${encodeURIComponent(p.slug)}" target="_blank"><button>View</button></a>
+            <button onclick="prefill('${p.slug.replace(/'/g, "\\'")}')">Edit</button>
+            <button onclick="deleteProduct('${p.id}')">Delete</button>
+          </div>
+        </div>`).join('');
+    }
+
+    window.deleteProduct = async (id) => {
+      if (!confirm('Delete this product?')) return;
+      const { error } = await supabase.from('products').delete().eq('id', id);
+      if (error) alert(error.message); else loadList();
+    };
+
+    window.prefill = async (slug) => {
+      const { data, error } = await supabase.from('products').select('*').eq('slug', slug).limit(1).maybeSingle();
+      if (error || !data) { alert('Failed to load'); return; }
+      document.getElementById('name').value = data.name || '';
+      document.getElementById('slug').value = data.slug || '';
+      document.getElementById('price').value = data.price || 0;
+      document.getElementById('short').value = data.short || '';
+      document.getElementById('description').value = data.description || '';
+      document.getElementById('tags').value = (data.tags || []).join(', ');
+      document.getElementById('in_stock').value = data.in_stock ? 'true' : 'false';
+      document.getElementById('specs').value = Object.entries(data.specs || {}).map(([k,v]) => k + ': ' + v).join('\\n');
+      document.getElementById('images').value = ''; // re-upload to replace
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    };
+  </script>
+</body>
+</html>
