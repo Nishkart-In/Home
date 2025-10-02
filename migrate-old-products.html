@@ -1,0 +1,54 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Migrate old products → Supabase</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <script src="./config.js"></script>
+  <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+  <script src="./products.js?v=6"></script>
+  <style>
+    body{font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; max-width:900px; margin:20px auto; padding:0 12px;}
+    code{background:#111;color:#d6e; padding:2px 6px;border-radius:6px}
+    .ok{color:#46d160}.err{color:#ff5e5e}.muted{color:#888}
+    .row{padding:6px 0;border-bottom:1px solid #222}
+  </style>
+</head>
+<body>
+  <h1>Migrate old products → Supabase</h1>
+  <p class="muted">Run this once. It will upsert your existing <code>window.NISHKART_PRODUCTS</code> (from products.js) into the <code>products</code> table.</p>
+  <div id="log"></div>
+
+  <script>
+    function log(line, cls=''){ const d=document.createElement('div'); d.className='row '+cls; d.textContent=line; document.getElementById('log').appendChild(d); }
+    (async function(){
+      if(!window.NKCFG){ log('config.js missing','err'); return; }
+      const supa = window.supabase.createClient(NKCFG.SUPABASE_URL, NKCFG.SUPABASE_ANON_KEY);
+      const arr = Array.isArray(window.NISHKART_PRODUCTS) ? window.NISHKART_PRODUCTS : [];
+      if(!arr.length){ log('No local products found in window.NISHKART_PRODUCTS. Make sure products.js is loaded.','err'); return; }
+      log('Found '+arr.length+' local products.');
+
+      for (const raw of arr) {
+        try{
+          const p = {
+            slug: String(raw.slug||'').trim().toLowerCase(),
+            name: raw.name || 'Unnamed',
+            price: Number(raw.price||0),
+            short: raw.short || '',
+            description: raw.description || '',
+            images: Array.isArray(raw.images) ? raw.images : (raw.image ? [raw.image] : []),
+            specs: (raw.specs && typeof raw.specs==='object') ? raw.specs : {},
+            tags: Array.isArray(raw.tags) ? raw.tags : [],
+            in_stock: raw.in_stock !== false
+          };
+          if(!p.slug){ log('SKIP (no slug): '+(p.name||'?'),'err'); continue; }
+          const { error } = await supa.from('products').upsert(p, { onConflict: 'slug' });
+          if(error) throw error;
+          log('Upsert OK: '+p.slug, 'ok');
+        }catch(e){ log('Error: '+(e.message||e),'err'); }
+      }
+      log('Done. You can delete this file now.', 'ok');
+    })();
+  </script>
+</body>
+</html>
